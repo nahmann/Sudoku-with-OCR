@@ -795,7 +795,7 @@ class SudokuOCRSolver:
     
 ##### HIGH-LEVEL PROCESSING METHODS
     
-    def process_image(self, image_path: str, master_keys = np.ndarray, debug: bool = False, 
+    def process_image(self, image_path: str, master_keys=None, debug: bool = False, 
                      detect_grid: bool = True) -> Dict:
         """
         Complete processing pipeline for a single Sudoku image.
@@ -840,6 +840,8 @@ class SudokuOCRSolver:
             )
             
             # Calculate accuracy if master key is available
+            if master_keys is None:
+                master_keys = {}
             if filename in master_keys:
                 result['master_key'] = master_keys[filename]
                 result['accuracy'] = self.calculate_accuracy(
@@ -977,17 +979,20 @@ if __name__ == "__main__":
     # Initialize the solver
     solver = SudokuOCRSolver()
     
-    # Process images in batch
-    results = solver.batch_process(
-        images_directory="images",
-        debug_images=[]  # Add filenames here to enable debug mode
-    )
+    # # Process images in batch
+    # results = solver.batch_process(
+    #     images_directory="images",
+    #     debug_images=[]  # Add filenames here to enable debug mode
+    # )
     
-    # Display results
-    solver.display_results(results)
+    # # Display results
+    # solver.display_results(results)
     
     # # Or process a single image
-    # result = solver.process_image("images/sudoku_grid1.png", debug=True)
-    # print(f"Extraction accuracy: {result['accuracy']:.1f}%")
-    # print(f"Solved successfully: {result['is_solved']}")
+    result = solver.process_image("images/sudoku_grid1.png", debug=True)
+    if result['accuracy'] is not None:
+        print(f"Extraction accuracy: {result['accuracy']:.1f}%")
+    else:
+        print("Extraction accuracy: N/A (no master key)")
+    print(f"Solved successfully: {result['is_solved']}")
 
