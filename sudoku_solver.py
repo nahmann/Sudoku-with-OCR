@@ -356,7 +356,7 @@ class SudokuOCRSolver:
                 print(f"    Error during Keras prediction: {e}")
             return None, 0.0
     
-    def extract_sudoku_grid(self, processed_image: np.ndarray, debug: bool = False) -> np.ndarray:
+    def extract_sudoku_grid(self, processed_image: np.ndarray, debug: bool = False) -> tuple[np.ndarray, dict]:
         """
         Extract the Sudoku grid from the processed image using advanced OCR techniques.
         
@@ -365,13 +365,19 @@ class SudokuOCRSolver:
             debug (bool): If True, displays the grid extraction and OCR results
             
         Returns:
-            np.ndarray: 9x9 array representing the Sudoku board (0 for empty cells)
+            tuple: (sudoku_board, confidence_stats) where:
+                - sudoku_board (np.ndarray): 9x9 array representing the Sudoku board (0 for empty cells)
+                - confidence_stats (dict): Dictionary with confidence statistics
         """
         if debug:
             print("Starting Sudoku grid extraction...")
         
-        # Initialize the 9x9 Sudoku board
+        # Initialize the 9x9 Sudoku board and confidence tracking
         sudoku_board = np.zeros((9, 9), dtype=int)
+        confidence_matrix = np.zeros((9, 9), dtype=float)  # Track confidence for each cell
+        confidences = []  # List of all non-zero confidences
+        successful_detections = 0
+        failed_detections = 0
         
         # Calculate cell dimensions
         height, width = processed_image.shape
@@ -384,7 +390,7 @@ class SudokuOCRSolver:
             
             # Create a figure to show all cells
             fig, axes = plt.subplots(9, 9, figsize=(12, 12))
-            fig.suptitle("Sudoku Cells with Two-Stage OCR", fontsize=16)
+            fig.suptitle("Sudoku Cells with OCR", fontsize=16)
         
         # Process each cell
         for row in range(9):
@@ -403,16 +409,68 @@ class SudokuOCRSolver:
                 cell = processed_image[y1:y2, x1:x2]
                 
                 # Check if cell has content and perform OCR
-                digit = self._process_cell(cell, debug)
-                sudoku_board[row, col] = digit if digit is not None else 0
+                result = self._process_cell(cell, debug)
+                
+                # Handle the result - _process_cell now consistently returns tuple or None
+                if result is not None:
+                    digit, confidence = result
+                    # Store results
+                    sudoku_board[row, col] = digit if digit is not None else 0
+                    confidence_matrix[row, col] = confidence if digit is not None else 0.0
+                    
+                    # Track statistics
+                    if digit is not None:
+                        successful_detections += 1
+                        confidences.append(confidence)
+                    else:
+                        failed_detections += 1
+                else:
+                    # No content detected
+                    sudoku_board[row, col] = 0
+                    confidence_matrix[row, col] = 0.0
+                    
+                    # Check if cell actually had content but OCR failed
+                    if self._has_content_pixels(cell, debug=False):
+                        failed_detections += 1
                 
                 if debug:
                     # Display the cell with result
                     axes[row, col].imshow(cell, cmap='gray')
-                    result_val = sudoku_board[row, col]
-                    title = f"R{row+1}C{col+1}: {result_val if result_val != 0 else 'Empty'}"
+                    if sudoku_board[row, col] != 0:
+                        confidence_val = confidence_matrix[row, col]
+                        title = f"R{row+1}C{col+1}: {sudoku_board[row, col]}\n({confidence_val:.1f}%)"
+                    else:
+                        title = f"R{row+1}C{col+1}: Empty"
                     axes[row, col].set_title(title, fontsize=8)
                     axes[row, col].axis('off')
+        
+        # Calculate confidence statistics
+        confidence_stats = {
+            'average_confidence': np.mean(confidences) if confidences else 0.0,
+            'median_confidence': np.median(confidences) if confidences else 0.0,
+            'min_confidence': np.min(confidences) if confidences else 0.0,
+            'max_confidence': np.max(confidences) if confidences else 0.0,
+            'std_confidence': np.std(confidences) if confidences else 0.0,
+            'successful_detections': successful_detections,
+            'failed_detections': failed_detections,
+            'total_digits_found': successful_detections,
+            'total_empty_cells': 81 - successful_detections - failed_detections,
+            'detection_rate': successful_detections / (successful_detections + failed_detections) if (successful_detections + failed_detections) > 0 else 1.0,
+            'confidence_matrix': confidence_matrix,
+            'individual_confidences': confidences,
+            'low_confidence_cells': []  # Cells with confidence below threshold
+        }
+        
+        # Identify low confidence cells (below 60%)
+        low_confidence_threshold = 60.0
+        for row in range(9):
+            for col in range(9):
+                if confidence_matrix[row, col] > 0 and confidence_matrix[row, col] < low_confidence_threshold:
+                    confidence_stats['low_confidence_cells'].append({
+                        'position': (row, col),
+                        'digit': sudoku_board[row, col],
+                        'confidence': confidence_matrix[row, col]
+                    })
         
         if debug:
             plt.tight_layout()
@@ -421,31 +479,76 @@ class SudokuOCRSolver:
             print("\nExtracted Sudoku Board:")
             self.print_sudoku_board(sudoku_board)
             
-            # Count filled cells
-            filled_cells = np.count_nonzero(sudoku_board)
-            print(f"\nFilled cells: {filled_cells}/81")
-            print(f"Empty cells: {81 - filled_cells}/81")
+            # Print confidence statistics
+            print("\n" + "="*50)
+            print("OCR CONFIDENCE STATISTICS")
+            print("="*50)
+            print(f"Average confidence: {confidence_stats['average_confidence']:.1f}%")
+            print(f"Median confidence:  {confidence_stats['median_confidence']:.1f}%")
+            print(f"Min confidence:     {confidence_stats['min_confidence']:.1f}%")
+            print(f"Max confidence:     {confidence_stats['max_confidence']:.1f}%")
+            print(f"Std deviation:      {confidence_stats['std_confidence']:.1f}%")
+            print()
+            print(f"Successful detections: {confidence_stats['successful_detections']}")
+            print(f"Failed detections:     {confidence_stats['failed_detections']}")
+            print(f"Empty cells:           {confidence_stats['total_empty_cells']}")
+            print(f"Detection rate:        {confidence_stats['detection_rate']:.1%}")
             
-        return sudoku_board
-    
-    def _process_cell(self, cell: np.ndarray, debug: bool, method='keras') -> Optional[int]:
-        """Process a single cell to extract digit."""
-        # Step 1: Quick content check
-        has_content = self._has_content_pixels(cell)
-        
+            if confidence_stats['low_confidence_cells']:
+                print(f"\nLow confidence cells (< {low_confidence_threshold}%):")
+                for cell_info in confidence_stats['low_confidence_cells']:
+                    row, col = cell_info['position']
+                    print(f"  Cell ({row+1}, {col+1}): digit={cell_info['digit']}, confidence={cell_info['confidence']:.1f}%")
+            
+            # Print confidence matrix
+            print("\nConfidence Matrix:")
+            print("   ", end="")
+            for col in range(9):
+                print(f"  C{col+1} ", end="")
+            print()
+            for row in range(9):
+                print(f"R{row+1} ", end="")
+                for col in range(9):
+                    conf = confidence_matrix[row, col]
+                    if conf > 0:
+                        print(f"{conf:5.1f}", end=" ")
+                    else:
+                        print("  ---", end=" ")
+                print()
+                
+        # Overall board quality assessment
+        avg_conf = confidence_stats['average_confidence']
+        if avg_conf >= 80:
+            quality = "EXCELLENT"
+        elif avg_conf >= 70:
+            quality = "GOOD"
+        elif avg_conf >= 60:
+            quality = "FAIR"
+        elif avg_conf >= 50:
+            quality = "POOR"
+        else:
+            quality = "VERY POOR"
+                
         if debug:
-            print(f"  Initial content check: {has_content}")
+            print(f"\nOverall Board Quality: {quality}")
+            print(f"Recommendation: {'Proceed with solving' if avg_conf >= 60 else 'Consider manual verification'}")
+                
+        return sudoku_board, confidence_stats
+
+    def _process_cell(self, cell: np.ndarray, debug: bool, method='keras') -> Optional[tuple[Optional[int], float]]:
+        """
+        Process a single cell to extract digit.
         
-        if not has_content:
-            # Step 2: Additional content check before declaring empty
-            has_content = self._additional_content_check(cell)
-            if debug:
-                print(f"  Additional content check: {has_content}")
+        Returns:
+            tuple[Optional[int], float] or None: (digit, confidence) or None if no content
+        """
+        # Step 1: Content check
+        has_content = self._has_content_pixels(cell, debug=debug)
         
         if not has_content:
             if debug:
                 print("  Cell marked as empty")
-            return None
+            return None  # No content detected
         
         # Cell has content - perform OCR
         if debug:
@@ -453,32 +556,41 @@ class SudokuOCRSolver:
         
         # Preprocess cell for OCR
         processed_cell = self._preprocess_cell_for_ocr(cell)
+        
         if method == 'keras' and self.model is not None:
             # Additional preprocessing for Keras MNIST model
             keras_input = self._preprocess_for_keras(processed_cell, debug)
             # Use Keras model for prediction
             predicted_digit, confidence = self._predict_digit_keras(keras_input, debug)
             confidence_threshold = 70.0  # Adjust this threshold as needed
-            if predicted_digit is not None and confidence > confidence_threshold:
+            
+            if predicted_digit is not None:
+                if confidence > confidence_threshold:
+                    if debug:
+                        print(f"  Accepted Keras result: {predicted_digit} (confidence: {confidence:.1f}%)")
+                    return (predicted_digit, confidence)
+                else:
+                    if debug:
+                        print(f"  Keras confidence too low ({confidence:.1f}% < {confidence_threshold}%)")
+                    # Return low confidence result for tracking
+                    return (predicted_digit, confidence)
+            else:
                 if debug:
-                    print(f"  Accepted Keras result: {predicted_digit}")
-                return predicted_digit
-            if debug:
-                print(f"  Keras confidence too low ({confidence:.1f}% < {confidence_threshold}%)")
+                    print("  Keras prediction failed")
+                return (None, 0.0)
 
         elif method == 'mixture':
-
-            # Basic Tesseract OCR
-            digit_tesseract, confidence = self._basic_tesseract_ocr(processed_cell, debug)
+            # Tesseract OCR
+            digit_tesseract, confidence_tess = self._tesseract_ocr(processed_cell, debug)
             
             if debug:
-                print(f"  Tesseract result: digit={digit_tesseract}, confidence={confidence:.1f}")
+                print(f"  Tesseract result: digit={digit_tesseract}, confidence={confidence_tess:.1f}%")
             
             # Check if Tesseract result is confident enough
-            if digit_tesseract is not None and confidence > 60:
+            if digit_tesseract is not None and confidence_tess > 60:
                 if debug:
                     print(f"  Accepted Tesseract result: {digit_tesseract}")
-                return digit_tesseract
+                return (digit_tesseract, confidence_tess)
             
             # Fallback to EasyOCR
             if debug:
@@ -487,22 +599,35 @@ class SudokuOCRSolver:
             digit_easy, confidence_easy = self._easyocr_fallback(processed_cell, debug)
             
             if debug:
-                print(f"  EasyOCR result: digit={digit_easy}, confidence={confidence_easy:.1f}")
+                print(f"  EasyOCR result: digit={digit_easy}, confidence={confidence_easy:.1f}%")
             
             # Check if EasyOCR result is confident enough
             if digit_easy is not None and confidence_easy > 40:
                 if debug:
                     print(f"  Accepted EasyOCR result: {digit_easy}")
-                return digit_easy
+                return (digit_easy, confidence_easy)
             elif digit_tesseract is not None:
                 # EasyOCR failed but Tesseract found something - use Tesseract despite low confidence
                 if debug:
                     print(f"  EasyOCR failed, falling back to Tesseract result: {digit_tesseract}")
-                return digit_tesseract
+                return (digit_tesseract, confidence_tess)
+            elif digit_easy is not None:
+                # Return EasyOCR result even if low confidence for tracking
+                if debug:
+                    print(f"  Using EasyOCR result despite low confidence: {digit_easy}")
+                return (digit_easy, confidence_easy)
+            else:
+                # Both methods failed
+                if debug:
+                    print("  Both OCR methods failed")
+                return (None, 0.0)
         
-        return None
+        # Fallback case
+        if debug:
+            print("  No OCR method available or all failed")
+        return (None, 0.0)
     
-    def _has_content_pixels(self, cell_image: np.ndarray) -> bool:
+    def _has_content_pixels(self, cell_image, debug: np.ndarray) -> bool:
         """Check if a cell contains any non-background pixels that might indicate a digit."""
         border_margin = 3
         h, w = cell_image.shape
@@ -517,10 +642,12 @@ class SudokuOCRSolver:
         
         # If more than 3% of inner pixels are white, consider it has content
         content_ratio = white_pixels / total_inner_pixels
-        return content_ratio > 0.03
-    
-    def _additional_content_check(self, cell_image: np.ndarray) -> bool:
-        """More thorough content check using connected components."""
+        if debug:
+                print(f"  Initial content check: {content_ratio > 0.03}")
+        if content_ratio > 0.03:
+            return True
+        
+        # More thorough content check using connected components.
         # Apply threshold to get binary image
         _, binary = cv2.threshold(cell_image, 100, 255, cv2.THRESH_BINARY)
         
@@ -539,8 +666,11 @@ class SudokuOCRSolver:
                 x > 2 and y > 2 and  # Not touching edges
                 x + w < cell_image.shape[1] - 2 and 
                 y + h < cell_image.shape[0] - 2):
+                if debug:
+                    print(f"  Additional content check: {True}")
                 return True
-        
+        if debug:
+                    print(f"  Additional content check: {False}")
         return False
     
     def _preprocess_cell_for_ocr(self, cell_image: np.ndarray) -> np.ndarray:
@@ -599,9 +729,9 @@ class SudokuOCRSolver:
         
         return processed
     
-    def _basic_tesseract_ocr(self, cell_image: np.ndarray, debug: bool = False) -> Tuple[Optional[int], float]:
+    def _tesseract_ocr(self, cell_image: np.ndarray, debug: bool = False) -> Tuple[Optional[int], float]:
         """
-        Perform basic Tesseract OCR on cell.
+        Perform Tesseract OCR on cell.
 
         Args:
             cell_image (np.ndarray): Preprocessed cell image
@@ -922,6 +1052,28 @@ class SudokuOCRSolver:
         
         return overlay_img
     
+    def get_confidence_summary(self, confidence_stats: dict) -> str:
+        """Generate a human-readable confidence summary."""
+        avg_conf = confidence_stats['average_confidence']
+        detection_rate = confidence_stats['detection_rate']
+        low_conf_count = len(confidence_stats['low_confidence_cells'])
+        
+        summary = f"OCR Performance Summary:\n"
+        summary += f"- Average Confidence: {avg_conf:.1f}%\n"
+        summary += f"- Detection Rate: {detection_rate:.1%}\n"
+        summary += f"- Digits Found: {confidence_stats['successful_detections']}/81\n"
+        summary += f"- Low Confidence Cells: {low_conf_count}\n"
+        
+        if avg_conf >= 75 and low_conf_count <= 2:
+            summary += "- Status: HIGH QUALITY - Ready for solving\n"
+        elif avg_conf >= 60 and low_conf_count <= 5:
+            summary += "- Status: GOOD QUALITY - Should solve well\n"
+        elif avg_conf >= 45:
+            summary += "- Status: MODERATE QUALITY - May need verification\n"
+        else:
+            summary += "- Status: LOW QUALITY - Manual review recommended\n"
+        
+        return summary
 ##### HIGH-LEVEL PROCESSING METHODS
     
     def process_image(self, image_path: str, master_keys=None, debug: bool = False, 
