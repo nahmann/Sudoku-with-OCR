@@ -1,9 +1,6 @@
 # Sudoku Solver From an Image
 # This program reads a Sudoku grid from an image, extracts the digits using OCR,
 # solves the Sudoku puzzle, and validates the solution. 
-# 9/8 - 9/12/2025
-#
-
 
 import cv2
 import numpy as np
@@ -15,6 +12,7 @@ import warnings
 import glob
 from scipy import ndimage
 from skimage import morphology, measure
+import tensorflow as tf
 
 warnings.filterwarnings('ignore')
 
@@ -23,7 +21,7 @@ class SudokuOCRSolver:
     A comprehensive Sudoku OCR solver that can detect, extract, solve, and validate Sudoku puzzles from images.
     """
     
-    def __init__(self, tesseract_path: str = None):
+    def __init__(self, tesseract_path: str = None, keras_model_path: str = 'mnist_digit_model.keras'):
         """
         Initialize the Sudoku OCR Solver.
         
@@ -35,6 +33,11 @@ class SudokuOCRSolver:
         
         # Initialize EasyOCR reader lazily
         self._easyocr_reader = None
+
+        # Initialize Keras model
+        self.model = None
+        self.keras_model_path = keras_model_path
+        self._load_keras_model()
     
     @property
     def easyocr_reader(self):
@@ -47,6 +50,32 @@ class SudokuOCRSolver:
                 print("Warning: EasyOCR not available. Install with: pip install easyocr")
                 self._easyocr_reader = False
         return self._easyocr_reader if self._easyocr_reader is not False else None
+    
+    def _load_keras_model(self, model_path: str = 'mnist_digit_model.keras'):
+        """Load the pretrained Keras model"""
+        try:
+            print(f"Attempting to load model from: {model_path}")
+            
+            # Check if file exists
+            import os
+            if not os.path.exists(model_path):
+                print(f"ERROR: Model file does not exist at {model_path}")
+                print(f"Current working directory: {os.getcwd()}")
+                print(f"Files in current directory: {os.listdir('.')}")
+                self.model = None
+                return
+                
+            # Try to load the model
+            self.model = tf.keras.models.load_model(model_path)
+            print(f"Successfully loaded Keras model from {model_path}")
+            print(f"Model summary: {self.model.summary()}")
+            
+        except Exception as e:
+            print(f"ERROR loading Keras model: {e}")
+            print(f"Exception type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
+            self.model = None
     
 #### IMAGE LOADING AND PREPROCESSING METHODS
     
@@ -296,7 +325,36 @@ class SudokuOCRSolver:
         
         return corrected_image, gray
     
-#### GRID EXTRACTION METHODS
+#### OCR METHODS
+    
+    def _predict_digit_keras(self, processed_cell: np.ndarray, debug: bool = False) -> tuple[Optional[int], float]:
+        """
+        Use Keras model to predict digit.
+        Returns: (predicted_digit, confidence)
+        """
+        if self.model is None:
+            if debug:
+                print("    Model not loaded!")
+            return None, 0.0
+        
+        try:
+            # Get prediction probabilities
+            predictions = self.model.predict(processed_cell, verbose=0)
+            
+            # Get the predicted digit and confidence
+            predicted_digit = int(np.argmax(predictions[0]))
+            confidence = float(np.max(predictions[0]) * 100)  # Convert to percentage
+            
+            if debug:
+                print(f"    Keras prediction probabilities: {predictions[0]}")
+                print(f"    Predicted digit: {predicted_digit}, confidence: {confidence:.1f}%")
+            
+            return predicted_digit, confidence
+            
+        except Exception as e:
+            if debug:
+                print(f"    Error during Keras prediction: {e}")
+            return None, 0.0
     
     def extract_sudoku_grid(self, processed_image: np.ndarray, debug: bool = False) -> np.ndarray:
         """
@@ -370,7 +428,7 @@ class SudokuOCRSolver:
             
         return sudoku_board
     
-    def _process_cell(self, cell: np.ndarray, debug: bool) -> Optional[int]:
+    def _process_cell(self, cell: np.ndarray, debug: bool, method='keras') -> Optional[int]:
         """Process a single cell to extract digit."""
         # Step 1: Quick content check
         has_content = self._has_content_pixels(cell)
@@ -395,38 +453,52 @@ class SudokuOCRSolver:
         
         # Preprocess cell for OCR
         processed_cell = self._preprocess_cell_for_ocr(cell)
-        
-        # Basic Tesseract OCR
-        digit_tesseract, confidence = self._basic_tesseract_ocr(processed_cell, debug)
-        
-        if debug:
-            print(f"  Tesseract result: digit={digit_tesseract}, confidence={confidence:.1f}")
-        
-        # Check if Tesseract result is confident enough
-        if digit_tesseract is not None and confidence > 60:
+        if method == 'keras' and self.model is not None:
+            # Additional preprocessing for Keras MNIST model
+            keras_input = self._preprocess_for_keras(processed_cell, debug)
+            # Use Keras model for prediction
+            predicted_digit, confidence = self._predict_digit_keras(keras_input, debug)
+            confidence_threshold = 70.0  # Adjust this threshold as needed
+            if predicted_digit is not None and confidence > confidence_threshold:
+                if debug:
+                    print(f"  Accepted Keras result: {predicted_digit}")
+                return predicted_digit
             if debug:
-                print(f"  Accepted Tesseract result: {digit_tesseract}")
-            return digit_tesseract
-        
-        # Fallback to EasyOCR
-        if debug:
-            print("  Tesseract confidence low, trying EasyOCR...")
-        
-        digit_easy, confidence_easy = self._easyocr_fallback(processed_cell, debug)
-        
-        if debug:
-            print(f"  EasyOCR result: digit={digit_easy}, confidence={confidence_easy:.1f}")
-        
-        # Check if EasyOCR result is confident enough
-        if digit_easy is not None and confidence_easy > 40:
+                print(f"  Keras confidence too low ({confidence:.1f}% < {confidence_threshold}%)")
+
+        elif method == 'mixture':
+
+            # Basic Tesseract OCR
+            digit_tesseract, confidence = self._basic_tesseract_ocr(processed_cell, debug)
+            
             if debug:
-                print(f"  Accepted EasyOCR result: {digit_easy}")
-            return digit_easy
-        elif digit_tesseract is not None:
-            # EasyOCR failed but Tesseract found something - use Tesseract despite low confidence
+                print(f"  Tesseract result: digit={digit_tesseract}, confidence={confidence:.1f}")
+            
+            # Check if Tesseract result is confident enough
+            if digit_tesseract is not None and confidence > 60:
+                if debug:
+                    print(f"  Accepted Tesseract result: {digit_tesseract}")
+                return digit_tesseract
+            
+            # Fallback to EasyOCR
             if debug:
-                print(f"  EasyOCR failed, falling back to Tesseract result: {digit_tesseract}")
-            return digit_tesseract
+                print("  Tesseract confidence low, trying EasyOCR...")
+            
+            digit_easy, confidence_easy = self._easyocr_fallback(processed_cell, debug)
+            
+            if debug:
+                print(f"  EasyOCR result: digit={digit_easy}, confidence={confidence_easy:.1f}")
+            
+            # Check if EasyOCR result is confident enough
+            if digit_easy is not None and confidence_easy > 40:
+                if debug:
+                    print(f"  Accepted EasyOCR result: {digit_easy}")
+                return digit_easy
+            elif digit_tesseract is not None:
+                # EasyOCR failed but Tesseract found something - use Tesseract despite low confidence
+                if debug:
+                    print(f"  EasyOCR failed, falling back to Tesseract result: {digit_tesseract}")
+                return digit_tesseract
         
         return None
     
@@ -494,6 +566,38 @@ class SudokuOCRSolver:
         blurred = cv2.GaussianBlur(resized, (3, 3), 0)
         
         return blurred
+    
+    def _preprocess_for_keras(self, cell: np.ndarray, debug: bool = False) -> np.ndarray:
+        """
+        Preprocess cell image for Keras MNIST model.
+        Expected input: 28x28 grayscale image, normalized to [0,1]
+        """
+        # Convert to grayscale if needed
+        if len(cell.shape) == 3:
+            cell = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+        
+        # Resize to 28x28 (MNIST standard)
+        resized = cv2.resize(cell, (28, 28), interpolation=cv2.INTER_AREA)
+        
+        # Normalize pixel values to [0, 1]
+        normalized = resized.astype(np.float32) / 255.0
+        
+        # MNIST digits are white on black background, so we might need to invert
+        # Check if the image needs inversion (if background is lighter than foreground)
+        mean_val = np.mean(normalized)
+        if mean_val > 0.5:  # Likely black digits on white background
+            normalized = 1.0 - normalized  # Invert to white digits on black background
+        
+        # Add batch dimension and channel dimension for model input
+        # Shape: (1, 28, 28, 1)
+        processed = normalized.reshape(1, 28, 28, 1)
+        
+        if debug:
+            print(f"    Preprocessed shape: {processed.shape}")
+            print(f"    Pixel range: [{processed.min():.3f}, {processed.max():.3f}]")
+            print(f"    Mean pixel value: {processed.mean():.3f}")
+        
+        return processed
     
     def _basic_tesseract_ocr(self, cell_image: np.ndarray, debug: bool = False) -> Tuple[Optional[int], float]:
         """
@@ -717,8 +821,15 @@ class SudokuOCRSolver:
                     return False
         
         return True
-    
-    
+
+    def validate_sudoku_board_with_claude():
+        """
+        Placeholder for Claude-based validation method.
+        """
+        pass
+
+
+
 ##### UTILITY METHODS
 
     def calculate_accuracy(self, extracted_board: np.ndarray, master_key: np.ndarray) -> float:
@@ -988,7 +1099,7 @@ if __name__ == "__main__":
     # # Display results
     # solver.display_results(results)
     
-    # # Or process a single image
+    # Or process a single image
     result = solver.process_image("images/sudoku_grid1.png", debug=True)
     if result['accuracy'] is not None:
         print(f"Extraction accuracy: {result['accuracy']:.1f}%")
