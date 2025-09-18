@@ -709,12 +709,17 @@ class SudokuOCRSolver:
     
     # SUDOKU SOLVING METHODS
     
-    def solve_sudoku(self, board: np.ndarray, debug: bool = False) -> Tuple[np.ndarray, bool]:
+    def solve_sudoku(self, board: np.ndarray, max_steps=10000, debug: bool = False) -> Tuple[np.ndarray, bool]:
         """
         Solve a Sudoku puzzle using backtracking algorithm.
+        Typical range for well-formed puzzles: 100-5,000 recursive calls
+        Easy/Medium Puzzles: 10,000 - 25,000 steps
+        Hard Puzzles: 50,000 - 100,000 steps
+        Extreme/Invalid Puzzles: 100,000 - 500,000 steps
         
         Args:
             board (np.ndarray): 9x9 Sudoku board (0 for empty cells)
+            max_steps (int): Maximum number of recursive calls allowed
             debug (bool): If True, shows solving progress
             
         Returns:
@@ -722,11 +727,16 @@ class SudokuOCRSolver:
         """
         if debug:
             print("Starting Sudoku solving process...")
+            print(f"Maximum steps allowed: {max_steps}")
             print("Initial board:")
             self.print_sudoku_board(board)
         
         # Make a copy to avoid modifying the original
         solved_board = board.copy()
+
+        # Initialize step counter
+        self.step_counter = 0
+        self.max_steps = max_steps
         
         # Attempt to solve
         is_solved = self._solve_recursive(solved_board, debug)
@@ -744,6 +754,14 @@ class SudokuOCRSolver:
     
     def _solve_recursive(self, board: np.ndarray, debug: bool = False) -> bool:
         """Recursive backtracking solver."""
+
+        # Increment and check step counter
+        self.step_counter += 1
+        if self.step_counter > self.max_steps:
+            if debug:
+                print(f"Maximum steps ({self.max_steps}) reached. Stopping recursion.")
+            return False
+
         for row in range(9):
             for col in range(9):
                 if board[row][col] == 0:  # Empty cell
@@ -969,7 +987,7 @@ class SudokuOCRSolver:
         return result
     
     def batch_process(self, images_directory: str = "images", debug_images: List[str] = None,
-                     image_extensions: List[str] = None) -> List[Dict]:
+                     image_extensions: List[str] = None, master_keys = None) -> List[Dict]:
         """
         Process multiple Sudoku images in batch.
         
@@ -1012,7 +1030,7 @@ class SudokuOCRSolver:
             debug_status = " (DEBUG MODE)" if debug_mode else ""
             print(f"Processing: {filename}{debug_status}")
             
-            result = self.process_image(image_path, debug=debug_mode)
+            result = self.process_image(image_path, master_keys=master_keys, debug=debug_mode)
             results.append(result)
             
             if result['success']:
@@ -1085,6 +1103,99 @@ class SudokuOCRSolver:
         print(f"Average accuracy: {avg_accuracy:.1f}%")
 
 
+##### Master Keys
+MASTER_KEYS = {
+    "empty_sudoku_grid1.png": np.array([
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ]),
+    "sudoku_grid1.png": np.array([
+        [0, 0, 8, 3, 0, 0, 1, 2, 0],
+        [0, 0, 0, 6, 8, 0, 0, 0, 7],
+        [0, 6, 7, 0, 5, 0, 0, 0, 0],
+        [5, 0, 0, 2, 0, 6, 0, 4, 0],
+        [3, 0, 9, 8, 0, 0, 0, 7, 0],
+        [0, 0, 0, 0, 4, 0, 8, 0, 1],
+        [0, 0, 5, 0, 0, 0, 9, 0, 3],
+        [2, 0, 0, 0, 0, 9, 0, 8, 0],
+        [0, 0, 4, 7, 0, 1, 0, 0, 0]
+    ]),
+    "sudoku_grid2.png": np.array([
+        [8, 0, 1, 0, 0, 0, 9, 0, 5],
+        [0, 5, 0, 2, 0, 0, 0, 8, 0],
+        [0, 0, 0, 0, 6, 0, 3, 0, 0],
+        [0, 0, 0, 0, 5, 9, 4, 0, 0],
+        [9, 4, 6, 7, 0, 8, 0, 0, 0],
+        [0, 7, 0, 1, 0, 0, 0, 0, 3],
+        [0, 0, 0, 0, 1, 0, 0, 2, 0],
+        [2, 0, 9, 4, 0, 0, 0, 0, 7],
+        [7, 0, 0, 0, 0, 3, 1, 0, 6]
+    ]),
+     "sudoku_grid3.png": np.array([
+        [0, 0, 0, 0, 0, 5, 0, 8, 4],
+        [0, 0, 1, 9, 0, 6, 0, 0, 0],
+        [0, 4, 9, 7, 2, 0, 6, 0, 3],
+        [0, 0, 5, 2, 0, 9, 0, 0, 0],
+        [9, 2, 0, 4, 7, 0, 0, 0, 1],
+        [0, 6, 3, 5, 0, 1, 0, 2, 0],
+        [1, 0, 0, 6, 0, 0, 0, 0, 2],
+        [0, 8, 4, 0, 5, 0, 0, 9, 6],
+        [0, 9, 6, 0, 1, 0, 7, 0, 5]
+    ]),
+    "sudoku_grid4.png": np.array([
+        [1, 0, 0, 4, 2, 8, 0, 9, 0],
+        [0, 8, 0, 7, 0, 0, 0, 0, 2],
+        [7, 0, 9, 0, 0, 1, 0, 0, 3],
+        [0, 0, 6, 0, 9, 2, 5, 1, 0],
+        [0, 1, 0, 8, 0, 0, 0, 6, 7],
+        [4, 9, 0, 1, 0, 0, 2, 0, 0],
+        [9, 4, 7, 0, 8, 0, 0, 0, 0],
+        [2, 0, 0, 9, 1, 3, 0, 7, 0],
+        [0, 0, 0, 2, 7, 0, 6, 0, 9]
+    ]),
+    "sudoku_grid5.png": np.array([
+        [0, 0, 0, 4, 0, 0, 0, 0, 1],
+        [0, 0, 0, 9, 0, 2, 8, 0, 0],
+        [3, 0, 0, 0, 0, 0, 0, 5, 7],
+        [0, 7, 0, 3, 0, 0, 0, 0, 0],
+        [0, 0, 2, 0, 4, 0, 1, 0, 0],
+        [0, 0, 8, 0, 2, 0, 0, 6, 5],
+        [0, 0, 0, 0, 0, 9, 0, 0, 8],
+        [0, 0, 0, 0, 1, 0, 2, 0, 0],
+        [0, 8, 0, 0, 0, 0, 0, 3, 0]
+    ]),
+    "sudoku_grid6.png": np.array([
+        [0, 0, 0, 0, 2, 7, 6, 8, 0],
+        [9, 0, 2, 0, 0, 0, 0, 0, 0],
+        [8, 0, 0, 3, 0, 0, 0, 7, 2],
+        [0, 1, 9, 0, 0, 5, 0, 6, 0],
+        [3, 0, 8, 0, 7, 0, 4, 0, 9],
+        [0, 6, 0, 4, 0, 0, 1, 2, 0],
+        [2, 4, 0, 0, 0, 6, 0, 0, 1],
+        [0, 0, 0, 0, 0, 0, 5, 0, 8],
+        [0, 8, 5, 1, 9, 0, 0, 0, 0]
+    ]),
+    "sudoku_grid7.png": np.array([
+        [4, 0, 7, 1, 0, 0, 2, 0, 3],
+        [0, 8, 0, 0, 3, 2, 0, 0, 0],
+        [3, 0, 9, 0, 0, 7, 0, 5, 0],
+        [0, 0, 0, 5, 0, 0, 7, 1, 0],
+        [2, 0, 0, 0, 0, 0, 0, 0, 5],
+        [0, 5, 3, 0, 0, 9, 0, 0, 0],
+        [0, 9, 0, 0, 0, 0, 6, 0, 7],
+        [0, 0, 0, 7, 2, 0, 0, 9, 0],
+        [7, 0, 2, 0, 0, 6, 5, 0, 1]
+    ]),
+}
+
+
 # Example usage:
 if __name__ == "__main__":
     # Initialize the solver
@@ -1093,6 +1204,7 @@ if __name__ == "__main__":
     # # Process images in batch
     # results = solver.batch_process(
     #     images_directory="images",
+    #     master_keys=MASTER_KEYS,
     #     debug_images=[]  # Add filenames here to enable debug mode
     # )
     
@@ -1100,7 +1212,7 @@ if __name__ == "__main__":
     # solver.display_results(results)
     
     # Or process a single image
-    result = solver.process_image("images/sudoku_grid1.png", debug=True)
+    result = solver.process_image("images/sudoku_grid1.png", master_keys=MASTER_KEYS, debug=True)
     if result['accuracy'] is not None:
         print(f"Extraction accuracy: {result['accuracy']:.1f}%")
     else:
